@@ -15,6 +15,7 @@ The important design decision: **the LLM does not diagnose.** Hindsight's
 model only formats that answer for humans. Remove the memory and the quality
 visibly collapses, which is the point.
 
+![BlameLess](~/Pictures/Screenshots/BlameLess.png)
 ---
 
 ## Contents
