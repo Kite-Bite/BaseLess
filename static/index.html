@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blameless: the on-call agent that remembers every outage</title>
+<style>
+/* ------------------------------------------------------------------
+   Palette: wallust, generated from the current wallpaper.
+   customThemes/wallust.conf - full 16-colour scheme on a warm near-black.
+   Every colour below is taken verbatim from that palette; the only
+   derivations are surface/elevations, which are bg + a few % of light.
+   ------------------------------------------------------------------ */
+:root {
+  --bg:          #090300;   /* palette 0  - background                */
+  --surface-1:   #120C08;   /* derived    - panels                     */
+  --surface-2:   #1A130E;   /* derived    - cards, inputs             */
+  --border:      #2A221C;   /* derived    - hairlines                 */
+  --border-lit:  #3A3432;   /* palette 10 - emphasised borders        */
+  --text:        #D6D5D4;   /* palette 13 - body text                 */
+  --text-dim:    #A5A2A2;   /* palette 7  - secondary text            */
+  --text-faint:  #807D7C;   /* palette 12 - muted, footers            */
+  --text-bright: #F7F7F7;   /* palette 15 - headings                   */
+
+  --gold:        #CDAB53;   /* palette 14 - brand, primary action      */
+  --red:         #DB2D20;   /* palette 1  - errors, SEV1, memory off   */
+  --green:       #01A252;   /* palette 2  - retain / learning loop     */
+  --yellow:      #FDED02;   /* palette 3  - warnings                   */
+  --blue:        #01A0E4;   /* palette 4  - recall / retrieval         */
+  --cyan:        #B5E4F4;   /* palette 6  - recalled-memory accents    */
+  --purple:      #A16A94;   /* palette 5  - reflect / reasoning        */
+  --pink:        #E8BBD0;   /* palette 9  - highlight                  */
+
+  --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  --r: 10px;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--cyan); }
+code, .mono { font-family: var(--mono); }
+
+/* ---------- header ---------- */
+header {
+  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  padding: 18px 28px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-1), var(--bg));
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.brand h1 {
+  margin: 0; font-size: 25px; letter-spacing: -0.5px;
+  color: var(--gold); font-weight: 700;
+}
+.brand .tag { color: var(--text-faint); font-size: 13.5px; font-style: italic; }
+.spacer { flex: 1; }
+
+.pill {
+  font: 600 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .8px;
+  padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border-lit);
+  color: var(--text-dim); white-space: nowrap;
+}
+.pill.on  { color: var(--green); border-color: var(--green); }
+.pill.off { color: var(--red);   border-color: var(--red); }
+
+button {
+  font: 600 13px/1 var(--sans); color: var(--text); cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border-lit);
+  padding: 10px 16px; border-radius: 8px; transition: border-color .15s, background .15s;
+}
+button:hover:not(:disabled) { border-color: var(--gold); background: #241A12; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--gold); color: var(--bg); border-color: var(--gold); font-weight: 700; }
+button.primary:hover:not(:disabled) { background: #dcbb63; border-color: #dcbb63; }
+button.ghost { background: transparent; }
+
+/* ---------- layout ---------- */
+.wrap { display: grid; grid-template-columns: minmax(0,1fr) 400px; gap: 24px; padding: 24px 28px 80px; max-width: 1560px; margin: 0 auto; }
+@media (max-width: 1080px) { .wrap { grid-template-columns: minmax(0,1fr); } }
+
+.panel {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--r); margin-bottom: 20px; overflow: hidden;
+}
+.panel > h2 {
+  margin: 0; padding: 13px 18px; font-size: 12px; font-weight: 700;
+  letter-spacing: 1.1px; text-transform: uppercase; color: var(--text-faint);
+  border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;
+}
+.panel > h2 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.panel > h2 .right { margin-left: auto; font-weight: 500; letter-spacing: .3px; text-transform: none; font-size: 12px; }
+.panel .body { padding: 18px; }
+
+form { display: grid; gap: 13px; }
+label { display: grid; gap: 6px; font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+label .hint { font-weight: 400; color: var(--text-faint); font-size: 11.5px; }
+.row { display: grid; grid-template-columns: 2fr 1fr 110px; gap: 13px; }
+input, textarea, select {
+  font: 14px var(--sans); color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border-lit); border-radius: 8px; padding: 10px 12px; width: 100%;
+}
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--gold); outline-offset: -1px; border-color: var(--gold); }
+textarea { font-family: var(--mono); font-size: 12.5px; line-height: 1.55; resize: vertical; min-height: 130px; }
+
+/* ---------- result ---------- */
+.empty { color: var(--text-faint); font-style: italic; padding: 6px 0; }
+.warnbar {
+  padding: 10px 13px; border-radius: 8px; font-size: 13px; margin-bottom: 14px;
+  background: rgba(219,45,32,.10); border: 1px solid var(--red); color: var(--pink);
+}
+.confbar {
+  margin-top: 16px; padding: 11px 14px; border-radius: 8px; font-size: 13px;
+  background: var(--surface-2); border-left: 3px solid var(--gold); color: var(--text-dim);
+}
+.confbar.off { border-left-color: var(--red); background: rgba(219,45,32,.08); }
+
+.diag { font-size: 14.5px; }
+.diag h3 { color: var(--gold); font-size: 15px; margin: 20px 0 8px; letter-spacing: -.2px; }
+.diag h4 { color: var(--cyan); font-size: 13.5px; margin: 16px 0 6px; }
+.diag h3:first-child, .diag h4:first-child, .diag p:first-child { margin-top: 0; }
+.diag p { margin: 0 0 10px; }
+.diag strong { color: var(--text-bright); }
+.diag ul { margin: 0 0 10px; padding-left: 20px; }
+.diag li { margin-bottom: 5px; }
+.diag code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--cyan); font-size: 12.5px; }
+
+.causes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.cause { font: 12px var(--mono); padding: 5px 10px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border-lit); color: var(--cyan); }
+
+/* ---------- recalled memories ---------- */
+.mem {
+  border: 1px solid var(--border); border-left: 3px solid var(--blue);
+  border-radius: 8px; padding: 11px 13px; margin-bottom: 9px; background: var(--surface-2);
+}
+.mem .top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 6px; }
+.mem .id { font: 600 11.5px var(--mono); color: var(--cyan); }
+.mem .sev { font: 700 10px var(--mono); padding: 2px 7px; border-radius: 4px; border: 1px solid; }
+.mem .SEV1 { color: var(--red);    border-color: var(--red); }
+.mem .SEV2 { color: var(--gold);   border-color: var(--gold); }
+.mem .SEV3 { color: var(--blue);   border-color: var(--blue); }
+.mem .SEV4 { color: var(--text-faint); border-color: var(--text-faint); }
+.mem .sys { font: 11.5px var(--mono); color: var(--text-faint); }
+.mem .score { margin-left: auto; font: 11px var(--mono); color: var(--text-faint); }
+.mem .txt { font-size: 13.2px; color: var(--text-dim); line-height: 1.55; }
+
+/* ---------- memory trace ---------- */
+aside { position: sticky; top: 92px; align-self: start; }
+.trace { font-family: var(--mono); font-size: 12px; max-height: calc(100vh - 190px); overflow-y: auto; }
+.trace::-webkit-scrollbar { width: 8px; }
+.trace::-webkit-scrollbar-thumb { background: var(--border-lit); border-radius: 4px; }
+.call {
+  padding: 9px 11px; border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--text-faint); animation: slidein .3s ease;
+}
+@keyframes slidein { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+.call .r1 { display: flex; align-items: center; gap: 8px; }
+.call .op { font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.call .n { color: var(--text-faint); }
+.call .ms { margin-left: auto; color: var(--text-faint); }
+.call .q { color: var(--text-faint); margin-top: 4px; font-size: 11px; line-height: 1.45; word-break: break-word; }
+.call.recall  { border-left-color: var(--blue); }   .call.recall .op  { color: var(--blue); }
+.call.reflect { border-left-color: var(--purple); } .call.reflect .op { color: var(--purple); }
+.call.retain, .call.retain_batch { border-left-color: var(--green); } .call.retain .op, .call.retain_batch .op { color: var(--green); }
+.call.create_bank { border-left-color: var(--gold); } .call.create_bank .op { color: var(--gold); }
+.call.fail { border-left-color: var(--red); background: rgba(219,45,32,.08); }
+.call.fail .op { color: var(--red); }
+.call.fail .q { color: var(--red); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--border); font: 11px var(--mono); color: var(--text-faint); }
+.legend i { font-style: normal; }
+.legend .k { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+/* ---------- session list / resolve ---------- */
+.sess { display: grid; gap: 8px; }
+.item { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+.item > summary { padding: 10px 13px; cursor: pointer; display: flex; align-items: center; gap: 9px; }
+.item > summary:hover { background: #241A12; }
+.item .t { font-size: 13.5px; font-weight: 600; color: var(--text-bright); }
+.item .meta { font: 11px var(--mono); color: var(--text-faint); margin-left: auto; }
+.item .inner { padding: 0 13px 13px; border-top: 1px solid var(--border); }
+.badge { font: 700 9.5px var(--mono); padding: 2px 6px; border-radius: 4px; border: 1px solid; }
+.badge.live { color: var(--gold); border-color: var(--gold); }
+.badge.res  { color: var(--green); border-color: var(--green); }
+
+details.raw > summary { cursor: pointer; color: var(--text-faint); font-size: 12.5px; margin-top: 12px; user-select: none; }
+details.raw pre {
+  background: #0D0805; border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; overflow-x: auto; font-size: 11.5px; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-word; max-height: 340px;
+}
+details.raw[open] > summary { color: var(--gold); }
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.toast {
+  position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+  background: var(--surface-2); border: 1px solid var(--gold); color: var(--text);
+  padding: 11px 20px; border-radius: 8px; font-size: 13.5px; z-index: 50;
+  box-shadow: 0 10px 34px rgba(0,0,0,.6);
+}
+footer { padding: 20px 28px 40px; color: var(--text-faint); font-size: 12.5px; text-align: center; }
+footer b { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>Blameless</h1>
+    <span class="tag">The on-call agent that remembers every outage.</span>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill" id="bankPill">bank</span>
+  <span class="pill" id="memPill">memory</span>
+  <button class="ghost" id="seedBtn" title="Load the 20 hand-written past incidents into the bank">Seed memory</button>
+  <button id="toggleBtn" title="Switch between the seeded bank and an empty one">Memory</button>
+</header>
+
+<div class="wrap">
+  <main>
+    <!-- 1. incident form -->
+    <section class="panel">
+      <h2><span class="dot" style="color:var(--gold)"></span>New incident <span class="right" id="sevHint">severity is stored with the incident in memory</span></h2>
+      <div class="body">
+        <form id="incForm">
+          <div class="row">
+            <label>Title
+              <input id="fTitle" required placeholder="Checkout API returning 500s, DB says too many clients">
+            </label>
+            <label>System
+              <input id="fSystem" required placeholder="checkout-api" value="checkout-api">
+            </label>
+            <label>Severity
+              <select id="fSeverity">
+                <option>SEV1</option><option selected>SEV2</option><option>SEV3</option><option>SEV4</option>
+              </select>
+            </label>
+          </div>
+          <label>Symptoms / log paste
+            <span class="hint">Paste the raw alert or log. The more literal the text, the better the recall.</span>
+            <textarea id="fSymptoms" required placeholder="2026-09-28 04:12:03 ERROR checkout-api/api: FATAL: sorry, too many clients already&#10;2026-09-28 04:13:20 WARN checkout-api: pool timeout, no connection available after 30s"></textarea>
+          </label>
+          <div>
+            <button class="primary" id="diagBtn" type="submit">Diagnose from memory <span class="mono">→ recall + reflect</span></button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 2. result -->
+    <section class="panel" id="resultPanel" hidden>
+      <h2><span class="dot" style="color:var(--gold)"></span>Diagnosis <span class="right" id="resultMeta"></span></h2>
+      <div class="body">
+        <div id="warnBox"></div>
+
+        <h3 style="margin:0 0 10px;font-size:12px;letter-spacing:1.1px;text-transform:uppercase;color:var(--gold)">Diagnosis</h3>
+        <div class="diag" id="diagText"></div>
+        <div class="causes" id="diagCauses"></div>
+        <div class="confbar" id="confBox"></div>
+
+        <details class="raw" id="rawWrap" hidden>
+          <summary id="rawSummary">Hindsight reflect() output (unformatted)</summary>
+          <pre id="rawText"></pre>
+        </details>
+      </div>
+    </section>
+
+    <!-- 3. recalled memory -->
+    <section class="panel" id="memPanel" hidden>
+      <h2><span class="dot" style="color:var(--blue)"></span>Recalled from memory <span class="right" id="memMeta"></span></h2>
+      <div class="body" id="memList"></div>
+    </section>
+
+    <!-- 4. resolve -->
+    <section class="panel" id="resolvePanel" hidden>
+      <h2><span class="dot" style="color:var(--green)"></span>Mark resolved <span class="right">retains the postmortem so future incidents can use it</span></h2>
+      <div class="body">
+        <form id="resForm">
+          <label>Root cause <span class="hint">blameless: systems and process, never a person</span>
+            <textarea id="rCause" required placeholder="The pool ceiling was never derived from the database's max_connections budget, so N replicas x M connections exceeded what the database could serve."></textarea>
+          </label>
+          <label>Resolution
+            <textarea id="rFix" required placeholder="Routed the service through the connection proxy, capped the pool, and added a pipeline check that rejects this shape of deploy."></textarea>
+          </label>
+          <div><button class="primary" id="resBtn" type="submit">Retain into memory <span class="mono">→ retain</span></button></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- 5. session incidents -->
+    <section class="panel">
+      <h2><span class="dot" style="color:var(--text-faint)"></span>This session <span class="right" id="sessMeta">0 incidents</span></h2>
+      <div class="body"><div class="sess" id="sessList"><div class="empty">No incidents yet this session.</div></div></div>
+    </section>
+  </main>
+
+  <!-- 6. memory trace -->
+  <aside>
+    <section class="panel" style="margin:0">
+      <h2><span class="dot" style="color:var(--purple)"></span>Memory Trace <span class="right" id="traceMeta">live</span></h2>
+      <div class="trace" id="traceList"><div class="empty" style="padding:16px">No Hindsight calls yet.</div></div>
+      <div class="legend">
+        <i><span class="k" style="background:var(--blue)"></span>recall</i>
+        <i><span class="k" style="background:var(--purple)"></span>reflect</i>
+        <i><span class="k" style="background:var(--green)"></span>retain</i>
+        <i><span class="k" style="background:var(--gold)"></span>create_bank</i>
+        <i><span class="k" style="background:var(--red)"></span>failed</i>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<footer>
+  Every retain, recall and reflect call above is a real <b>Hindsight</b> request.
+  The diagnosis is produced by <b>Hindsight reflect()</b> over a bank of past incidents; the LLM only formats it.
+</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { memoryEnabled: true, incidentId: null, lastTraceSeq: 0, busy: false };
+
+/* ---- tiny markdown renderer (Hindsight + the LLM both emit markdown) ----
+   Escape first, then transform, so model output can never inject markup. */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+function renderRich(md) {
+  const lines = esc(md ?? "").split("\n");
+  let out = "", inList = false;
+  const closeList = () => { if (inList) { out += "</ul>"; inList = false; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    let m;
+    if ((m = line.match(/^###\s+(.*)$/)))      { closeList(); out += `<h4>${inline(m[1])}</h4>`; }
+    else if ((m = line.match(/^##\s+(.*)$/)))   { closeList(); out += `<h3>${inline(m[1])}</h3>`; }
+    else if ((m = line.match(/^#\s+(.*)$/)))    { closeList(); out += `<h4>${inline(m[1])}</h4>`; }
+    else if ((m = line.match(/^[-*]\s+(.*)$/))) { if (!inList) { out += "<ul>"; inList = true; } out += `<li>${inline(m[1])}</li>`; }
+    else if (/^\s*\d+[.)]\s+/.test(line))       { if (!inList) { out += "<ul>"; inList = true; } out += `<li>${inline(line.replace(/^\s*\d+[.)]\s+/, ""))}</li>`; }
+    else if (!line.trim())                      { closeList(); }
+    else                                        { closeList(); out += `<p>${inline(line)}</p>`; }
+  }
+  closeList();
+  return out;
+}
+
+/* ---- fetch helpers ---- */
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "content-type": "application/json" }, ...opts,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `${res.status} ${res.statusText}`);
+  return body;
+}
+function toast(msg, ms = 3600) {
+  const t = document.createElement("div");
+  t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
+}
+function setBusy(on, msg) {
+  state.busy = on;
+  $("diagBtn").disabled = on;
+  $("seedBtn").disabled = on;
+  $("toggleBtn").disabled = on;
+  if (on) $("diagBtn").innerHTML = `<span class="spin">&#9696;</span> ${msg || "Thinking…"}`;
+}
+
+/* ---- Memory Trace panel (polls GET /trace) ---- */
+let traceInFlight = false;
+function drawTrace(calls) {
+  if (!calls.length) { $("traceList").innerHTML = '<div class="empty" style="padding:16px">No Hindsight calls yet.</div>'; return; }
+  $("traceList").innerHTML = calls.map((c) => `
+    <div class="call ${esc(c.op)} ${c.ok ? "" : "fail"}">
+      <div class="r1">
+        <span class="op">${esc(c.op)}</span>
+        <span class="n">${c.ok ? (c.op === "create_bank" ? "bank" : c.results + " hit" + (c.results === 1 ? "" : "s")) : "error"}</span>
+        <span class="ms">${Math.round(c.latency_ms)}ms</span>
+      </div>
+      <div class="q">${esc((c.query || "").replace(/\s+/g, " ").slice(0, 150))}${(c.query || "").length > 150 ? "…" : ""}</div>
+    </div>`).join("");
+}
+async function pollTrace() {
+  if (traceInFlight) return;               // never stack requests
+  traceInFlight = true;
+  try {
+    const t = await api("/trace?limit=40");
+    $("bankPill").textContent = "bank " + (t.bank_id || "?");
+    const pill = $("memPill");
+    pill.textContent = t.memory_enabled ? "memory on" : "memory off";
+    pill.className = "pill " + (t.memory_enabled ? "on" : "off");
+    $("toggleBtn").textContent = t.memory_enabled ? "Memory: ON" : "Memory: OFF";
+    drawTrace(t.calls);
+  } catch (e) { /* trace is best-effort while the server boots */ }
+  finally { traceInFlight = false; }
+}
+/* Poll fast while a diagnosis is running so the panel animates on screen,
+   then settle back down to an idle cadence. */
+let traceTimer = null;
+function tracePolling(fast) {
+  clearInterval(traceTimer);
+  traceTimer = setInterval(pollTrace, fast ? 700 : 3000);
+}
+
+/* ---- render a diagnosis ---- */
+function renderResult(r) {
+  state.incidentId = r.incident_id;
+  $("resultPanel").hidden = false;
+  $("resolvePanel").hidden = false;
+  $("resultMeta").textContent = `${r.incident_id} · ${r.recalled_incidents} past incident${r.recalled_incidents === 1 ? "" : "s"} consulted`;
+
+  $("warnBox").innerHTML = r.warning ? `<div class="warnbar">Hindsight error: ${esc(r.warning)}</div>` : "";
+  $("diagText").innerHTML = renderRich(r.diagnosis);
+
+  $("diagCauses").innerHTML = (r.suspected_causes || []).length
+    ? (r.suspected_causes || []).map((c) => `<span class="cause">${esc(c)}</span>`).join("")
+    : "";
+
+  const off = !r.memory_enabled;
+  $("confBox").className = "confbar" + (off ? " off" : "");
+  $("confBox").textContent = r.confidence_note;
+
+  if (r.reflect_analysis) {
+    $("rawWrap").hidden = false;
+    $("rawText").textContent = r.reflect_analysis;
+  } else { $("rawWrap").hidden = true; }
+
+  // Recalled memory panel
+  $("memPanel").hidden = false;
+  const mems = r.recalled_memories || [];
+  $("memMeta").textContent = mems.length
+    ? `${mems.length} shown · ${r.recalled_count} memories retrieved from ${r.bank_id}`
+    : `nothing relevant in ${r.bank_id}`;
+  $("memList").innerHTML = mems.length ? mems.map((m) => `
+    <div class="mem">
+      <div class="top">
+        <span class="id">${esc(m.document_id || "derived observation")}</span>
+        <span class="sev ${esc(m.severity || "")}">${esc(m.severity || "?")}</span>
+        <span class="sys">${esc(m.system || "unknown")}</span>
+        <span class="score">${m.score != null ? m.score.toFixed(3) : ""} · ${m.fragments} fact${m.fragments === 1 ? "" : "s"}</span>
+      </div>
+      <div class="txt">${esc(m.text)}</div>
+    </div>`).join("")
+    : `<div class="empty">No matching memories in the bank. ${
+        r.memory_enabled
+          ? "Nothing in memory resembles this, so the diagnosis below is from first principles."
+          : "Memory is OFF, so the bank is empty. This is the baseline: same incident, no precedent."
+      }</div>`;
+
+  renderSession();
+  loadSession();
+}
+
+async function loadSession() {
+  try {
+    const s = await api("/incidents");
+    $("sessMeta").textContent = `${s.count} incident${s.count === 1 ? "" : "s"}`;
+    $("sessList").innerHTML = s.incidents.length ? s.incidents.map((i) => `
+      <div class="item">
+        <summary>
+          <span class="badge ${i.status === "resolved" ? "res" : "live"}">${i.status === "resolved" ? "RESOLVED" : "OPEN"}</span>
+          <span class="t">${esc(i.title)}</span>
+          <span class="meta">${esc(i.severity)} · ${esc(i.system)} · ${i.recalled_count || 0} recalled</span>
+        </summary>
+        <div class="inner">
+          <div class="diag">${i.diagnosis ? renderRich(i.diagnosis) : '<div class="empty">No diagnosis yet.</div>'}</div>
+          ${i.root_cause ? `<p style="color:var(--text-dim);font-size:13px"><b style="color:var(--green)">Root cause:</b> ${esc(i.root_cause)}</p>` : ""}
+          ${i.resolution ? `<p style="color:var(--text-dim);font-size:13px"><b style="color:var(--green)">Resolution:</b> ${esc(i.resolution)}</p>` : ""}
+        </div>
+      </div>`).join("")
+      : '<div class="empty">No incidents yet this session.</div>';
+  } catch (e) { /* ignore */ }
+}
+
+/* ---- actions ---- */
+$("incForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  setBusy(true, "Recalling &amp; reflecting…");
+  tracePolling(true);
+  try {
+    const r = await api("/incidents", {
+      method: "POST",
+      body: JSON.stringify({
+        title: $("fTitle").value.trim(),
+        symptoms: $("fSymptoms").value.trim(),
+        system: $("fSystem").value.trim(),
+        severity: $("fSeverity").value,
+      }),
+    });
+    renderResult(r);
+    pollTrace();
+  } catch (e) {
+    $("resultPanel").hidden = false;
+    $("warnBox").innerHTML = `<div class="warnbar">${esc(e.message)}</div>`;
+    $("diagText").innerHTML = '<div class="empty">The request failed. Check the Memory Trace panel and the server log.</div>';
+  } finally {
+    setBusy(false);
+    $("diagBtn").innerHTML = 'Diagnose from memory <span class="mono">→ recall + reflect</span>';
+    tracePolling(false);
+    loadSession();
+  }
+});
+
+$("resForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!state.incidentId) return;
+  $("resBtn").disabled = true;
+  try {
+    const r = await api(`/incidents/${state.incidentId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ root_cause: $("rCause").value.trim(), resolution: $("rFix").value.trim() }),
+    });
+    toast(r.retained ? "Retained. The next similar incident will recall this one." : r.message);
+    pollTrace(); loadSession();
+  } catch (e) { toast("Resolve failed: " + e.message); }
+  finally { $("resBtn").disabled = false; }
+});
+
+$("seedBtn").addEventListener("click", async () => {
+  $("seedBtn").disabled = true;
+  $("seedBtn").textContent = "Seeding…";
+  try {
+    const r = await api("/seed", { method: "POST", body: "{}" });
+    toast(`Seeded ${r.seeded} past incidents into "${r.bank_id}".`);
+    pollTrace();
+  } catch (e) { toast("Seed failed: " + e.message); }
+  finally { $("seedBtn").disabled = false; $("seedBtn").textContent = "Seed memory"; }
+});
+
+$("toggleBtn").addEventListener("click", async () => {
+  const next = !state.memoryEnabled;
+  $("toggleBtn").disabled = true;
+  try {
+    const r = await api("/reset-demo", { method: "POST", body: JSON.stringify({ memory_enabled: next }) });
+    state.memoryEnabled = next;
+    toast(r.message, 5000);
+    pollTrace();
+  } catch (e) { toast("Toggle failed: " + e.message); }
+  finally { $("toggleBtn").disabled = false; }
+});
+
+/* live trace: faster while a diagnosis is in flight, so the panel animates */
+pollTrace();
+tracePolling(false);
+</script>
+</body>
+</html>

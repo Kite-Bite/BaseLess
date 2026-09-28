@@ -1,0 +1,26 @@
+[project]
+name = "blameless"
+version = "0.1.0"
+description = "The on-call agent that remembers every outage. Memory powered by Hindsight."
+readme = "README.md"
+authors = [
+    { name = "Kite-Bite", email = "omermt2016@proton.me" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "hindsight-client>=0.10.1",
+    "openai>=3.20.0",
+    "python-dotenv>=1.2.3",
+    "uvicorn[standard]>=0.54.0",
+]
+
+# No [project.scripts] entry point: the app is a root-level module, run with
+# `uv run uvicorn main:app --reload` (or `python -m uvicorn main:app`).
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = []
