@@ -48,9 +48,9 @@ POST /incidents                      POST /incidents/{id}/resolve
        │                                       │
   recall() ── 45 past memories          retain() ── postmortem
        │                                       │
-  reflect() ── diagnosis                      │
+  reflect() ── diagnosis                       │
        │                                       │
-  LLM formats ──► UI                          │
+  LLM formats ──► UI                           │
                                                └──► the next similar
                                                      incident recalls this one
 ```
