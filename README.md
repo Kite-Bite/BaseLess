@@ -36,7 +36,7 @@ visibly collapses, which is the point.
 ## Screenshots
 
 **1. A new incident arrives.** Title, system, severity and the raw log paste from
-the on-call engineer. Nothing else — the agent decides what is relevant.
+the on-call engineer. Nothing else the agent decides what is relevant.
 
 ![Submitting a new incident](./pic/BlameLess2.png)
 
