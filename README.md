@@ -16,10 +16,12 @@ model only formats that answer for humans. Remove the memory and the quality
 visibly collapses, which is the point.
 
 ![BlameLess](./pic/BlameLess.png)
+
 ---
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [What it does](#what-it-does)
 - [How Hindsight is used](#how-hindsight-is-used)
 - [Running the project](#running-the-project)
@@ -28,6 +30,35 @@ visibly collapses, which is the point.
 - [The seed incident library](#the-seed-incident-library)
 - [Demo walkthrough](#demo-walkthrough)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Screenshots
+
+**1. A new incident arrives.** Title, system, severity and the raw log paste from
+the on-call engineer. Nothing else — the agent decides what is relevant.
+
+![Submitting a new incident](./pic/BlameLess2.png)
+
+**2. The diagnosis.** Produced by Hindsight `reflect()` over the bank. The
+"Recalled from memory" panel names the past incidents consulted, with relevance
+scores, and the diagnosis cites them by ID.
+
+![Diagnosis grounded in recalled incidents](./pic/BlameLess3.png)
+
+**3. Mark resolved.** Write a blameless root cause and fix, then press **Retain
+into memory**. This `retain` call is what closes the learning loop.
+
+![Marking an incident resolved and retaining the postmortem](./pic/BlameLess4.png)
+
+**4. This session.** Incidents raised in this session, with their diagnosis, root
+cause and resolution, and how many memories each one recalled.
+
+![Session list of incidents](./pic/BlameLess5.png)
+
+**5. End of session.** The summary of what the bank learned during the run.
+
+![Session ending summary](./pic/BlameLess6.png)
 
 ---
 
@@ -368,10 +399,14 @@ and keep the same incident text ready for the comparison in step 5.
 1. **Point at the Memory Trace panel.** Nothing has happened yet. Press **Seed
    memory**: 20 incidents are retained in one call and the trace lights up.
 
+   ![Seeded memory bank](./pic/BlameLess.png)
+
 2. **Diagnose a new incident.** Paste an incident that is *not* in the library,
    for example, a certificate-expiry failure on a system you have never seen. The
    trace panel fills in live: `recall` returns ~45 memories, then `reflect` reasons
    over them.
+
+   ![Submitting a new incident](./pic/BlameLess2.png)
 
 3. **Read the "Recalled from memory" panel.** It names the past incidents used,
    with relevance scores. The seeded TLS incidents appear there: the new incident
@@ -382,9 +417,13 @@ and keep the same incident text ready for the comparison in step 5.
    proposes the fix that was already proven in production. A fresh prompt to an LLM
    would not produce that.
 
+   ![Diagnosis grounded in recalled incidents](./pic/BlameLess3.png)
+
 5. **Close the loop.** Expand **Mark resolved**, write a blameless root cause and
    fix, and press **Retain into memory**. A `retain` call appears in the trace. The
    system has learned something.
+
+   ![Marking an incident resolved and retaining the postmortem](./pic/BlameLess4.png)
 
 6. **The comparison.** Press **Memory: OFF** in the header. The app switches to an
    empty bank. Submit *the exact same incident*: recall returns nothing, reflect
@@ -394,6 +433,17 @@ and keep the same incident text ready for the comparison in step 5.
 
 Step 6 is the one that makes the argument: same incident, same model, same code, and
 the only difference is whether the memory exists.
+
+![Session list of incidents](./pic/BlameLess5.png)
+
+**This session:** every incident raised during the run, with the diagnosis, the
+blameless root cause, the resolution, and how many memories each one recalled.
+
+![Session ending summary](./pic/BlameLess6.png)
+
+**The summary at the end** is the record of what the bank learned: the sessions
+raised, the postmortems retained, and the calls made against Hindsight along the
+way.
 
 **Timing:** a diagnosis takes about 10 seconds, most of it in `reflect`. The trace
 panel polls every 700ms while a diagnosis is running, so the calls are visible as
